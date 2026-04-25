@@ -42,6 +42,19 @@ func TestWriteLine_AppendsNewline(t *testing.T) {
 	}
 }
 
+func TestWriteLine_EmptyString(t *testing.T) {
+	var buf bytes.Buffer
+	w := output.New(&buf)
+
+	if err := w.WriteLine(""); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// An empty line should still produce a newline character.
+	if got := buf.String(); got != "\n" {
+		t.Fatalf("expected %q, got %q", "\n", got)
+	}
+}
+
 func TestWrite_MultipleTargets(t *testing.T) {
 	var buf1, buf2 bytes.Buffer
 	w := output.New(&buf1, &buf2)
