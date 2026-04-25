@@ -1,0 +1,10 @@
+# Example logpipe configuration used in integration tests.
+sources:
+  - name: web
+    path: /tmp/web.log
+  - name: worker
+    path: /tmp/worker.log
+
+min_level: warn
+format: pretty
+key_filter: trace_id
