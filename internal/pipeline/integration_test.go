@@ -1,56 +1,82 @@
 package pipeline_test
 
 import (
-	"bytes"
 	"context"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
-	"github.com/user/logpipe/internal/filter"
-	"github.com/user/logpipe/internal/formatter"
-	"github.com/user/logpipe/internal/output"
-	"github.com/user/logpipe/internal/pipeline"
-	"github.com/user/logpipe/internal/source"
+	"github.com/yourorg/logpipe/internal/filter"
+	"github.com/yourorg/logpipe/internal/formatter"
+	"github.com/yourorg/logpipe/internal/output"
+	"github.com/yourorg/logpipe/internal/pipeline"
+	"github.com/yourorg/logpipe/internal/source"
 )
 
-// TestPipeline_FullIntegration exercises source → filter → formatter → output
-// with multiple sources and a key-contains filter to confirm end-to-end wiring.
+// TestPipeline_FullIntegration wires together a real source, filter, formatter,
+// and output to verify the full pipeline processes and delivers log lines.
 func TestPipeline_FullIntegration(t *testing.T) {
-	var buf bytes.Buffer
-	out := output.New(&buf)
-	fmt := formatter.New(formatter.Raw, true) // prefix source name
-	filt := filter.New(filter.Config{
-		KeyContains: map[string]string{"env": "prod"},
+	lines := []string{
+		`{"level":"info","msg":"server started"}`,
+		`{"level":"debug","msg":"verbose detail"}`,
+		`{"level":"error","msg":"something failed"}`,
+		`not json at all`,
+	}
+
+	src := source.New("app", strings.NewReader(strings.Join(lines, "\n")))
+
+	f, err := filter.New(filter.Config{
+		MinLevel: "info",
 	})
-
-	lines := []source.Line{
-		{Source: "api", Text: `{"level":"info","env":"prod","msg":"request ok"}`},
-		{Source: "worker", Text: `{"level":"info","env":"staging","msg":"job done"}`},
-		{Source: "api", Text: `{"level":"error","env":"prod","msg":"timeout"}`},
+	if err != nil {
+		t.Fatalf("filter.New: %v", err)
 	}
 
-	ch := makeSource(lines...)
-	p := pipeline.New(pipeline.Config{
-		Source: ch, Filter: filt, Formatter: fmt, Output: out,
+	fmt, err := formatter.New(formatter.Config{
+		Format: "raw",
 	})
-
-	if err := p.Run(context.Background()); err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	if err != nil {
+		t.Fatalf("formatter.New: %v", err)
 	}
 
-	got := buf.String()
+	var mu sync.Mutex
+	var received []string
 
-	if !strings.Contains(got, "request ok") {
-		t.Errorf("expected prod api line in output")
+	out := output.New(output.WriterFunc(func(line string) error {
+		mu.Lock()
+		defer mu.Unlock()
+		received = append(received, line)
+		return nil
+	}))
+
+	p := pipeline.New(src, f, fmt, out)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	if err := p.Run(ctx); err != nil && err != context.DeadlineExceeded {
+		t.Fatalf("pipeline.Run: %v", err)
 	}
-	if strings.Contains(got, "job done") {
-		t.Errorf("expected staging worker line to be filtered out")
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	// debug line should be filtered out; info, error, and non-JSON should pass
+	if len(received) != 3 {
+		t.Fatalf("expected 3 lines, got %d: %v", len(received), received)
 	}
-	if !strings.Contains(got, "timeout") {
-		t.Errorf("expected prod error line in output")
-	}
-	// source prefix should appear
-	if !strings.Contains(got, "api") {
-		t.Errorf("expected source prefix 'api' in output")
+
+	for _, want := range []string{"server started", "something failed", "not json at all"} {
+		found := false
+		for _, line := range received {
+			if strings.Contains(line, want) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("expected output to contain %q, got: %v", want, received)
+		}
 	}
 }
