@@ -1,65 +1,62 @@
-// Package config provides configuration loading and validation for logpipe.
+// Package config handles loading and validating logpipe configuration files.
 package config
 
 import (
+	"errors"
 	"fmt"
 	"os"
 
 	"gopkg.in/yaml.v3"
 )
 
-// Source defines a single log source to tail.
+// Source represents a single log source defined in the config file.
 type Source struct {
-	Name string `yaml:"name"`
-	Path string `yaml:"path"`
+	Name    string `yaml:"name"`
+	Path    string `yaml:"path"`
+	Command string `yaml:"command"`
 }
 
-// Config holds the top-level logpipe configuration.
+// Config is the top-level configuration structure.
 type Config struct {
 	Sources  []Source `yaml:"sources"`
 	MinLevel string   `yaml:"min_level"`
 	Format   string   `yaml:"format"`
-	KeyFilter string  `yaml:"key_filter"`
+	// RateLimit caps lines forwarded per second (0 = unlimited).
+	RateLimit int `yaml:"rate_limit"`
 }
 
-// Load reads and parses a YAML config file at the given path.
+// Load reads and validates a YAML config file at the given path.
 func Load(path string) (*Config, error) {
-	f, err := os.Open(path)
+	data, err := os.ReadFile(path)
 	if err != nil {
-		return nil, fmt.Errorf("config: open %q: %w", path, err)
+		return nil, fmt.Errorf("config: cannot read file %q: %w", path, err)
 	}
-	defer f.Close()
 
 	var cfg Config
-	dec := yaml.NewDecoder(f)
-	dec.KnownFields(true)
-	if err := dec.Decode(&cfg); err != nil {
-		return nil, fmt.Errorf("config: decode %q: %w", path, err)
+	if err := yaml.Unmarshal(data, &cfg); err != nil {
+		return nil, fmt.Errorf("config: invalid YAML: %w", err)
 	}
 
-	if err := cfg.validate(); err != nil {
-		return nil, err
+	if len(cfg.Sources) == 0 {
+		return nil, errors.New("config: at least one source must be defined")
+	}
+
+	if cfg.Format == "" {
+		cfg.Format = "pretty"
+	}
+
+	if cfg.RateLimit < 0 {
+		return nil, errors.New("config: rate_limit must be zero or positive")
+	}
+
+	for i, s := range cfg.Sources {
+		if s.Name == "" {
+			return nil, fmt.Errorf("config: source[%d] missing name", i)
+		}
+		if s.Path == "" && s.Command == "" {
+			return nil, fmt.Errorf("config: source %q must specify path or command", s.Name)
+		}
 	}
 
 	return &cfg, nil
-}
-
-// validate checks that required fields are present and values are acceptable.
-func (c *Config) validate() error {
-	if len(c.Sources) == 0 {
-		return fmt.Errorf("config: at least one source is required")
-	}
-	for i, s := range c.Sources {
-		if s.Path == "" {
-			return fmt.Errorf("config: source[%d] missing path", i)
-		}
-		if s.Name == "" {
-			c.Sources[i].Name = s.Path
-		}
-	}
-	validFormats := map[string]bool{"raw": true, "pretty": true, "": true}
-	if !validFormats[c.Format] {
-		return fmt.Errorf("config: invalid format %q (must be raw or pretty)", c.Format)
-	}
-	return nil
 }
